@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StockSense — прогноз спроса и закупок</title>
+<script src="/static/chart.umd.min.js"></script>
+<style>
+:root{--bg:#f5f7f6;--card:#fff;--ink:#101614;--muted:#66706c;--line:#e3e8e6;--brand:#0f9d6b;--red:#e0412f;--amber:#e39b0b;--blue:#2563eb}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1110;--card:#161c1a;--ink:#ecf2ef;--muted:#93a09b;--line:#26302c}}
+*{box-sizing:border-box}body{margin:0;font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink)}
+.wrap{max-width:1180px;margin:0 auto;padding:24px 16px}
+.logo{font-weight:800;font-size:22px}.logo span{color:var(--brand)}
+.hero h1{font-size:clamp(26px,4.5vw,42px);line-height:1.12;margin:28px 0 10px}.hero p{color:var(--muted);max-width:700px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px}
+.grid{display:grid;gap:16px}.g4{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}
+.up{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));align-items:end}
+label.f{display:block;font-size:13px;color:var(--muted)}input[type=file]{width:100%;margin-top:6px}
+.btn{border:0;border-radius:10px;padding:12px 18px;font-weight:600;cursor:pointer;font-size:15px}
+.btn-p{background:var(--brand);color:#fff}.btn-g{background:transparent;border:1px solid var(--line);color:var(--ink)}
+.kpi .v{font-size:26px;font-weight:800}.kpi .l{font-size:13px;color:var(--muted)}
+h2{font-size:18px;margin:0 0 12px}table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{padding:8px 6px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+tr.row{cursor:pointer}tr.row:hover,tr.sel{background:var(--bg)}
+.pill{padding:2px 9px;border-radius:99px;font-size:12px;font-weight:600}
+.order_now{background:#fde5e2;color:#b42318}.order_soon{background:#fdf0d5;color:#93600a}.ok{background:#dcf5ea;color:#0b6b48}.overstock{background:#e0e9fd;color:#1d4ed8}
+.scroll{overflow:auto}.muted{color:var(--muted)}.hidden{display:none}.err{color:var(--red);margin-top:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="logo">Stock<span>Sense</span></div>
+  <section class="hero">
+    <h1>Знайте, что и сколько заказать — до того, как товар закончится</h1>
+    <p>ML-прогноз спроса на 28 дней по каждому товару, точка заказа, страховой запас и готовый заказ поставщику. Для продавцов Kaspi Магазина, Wildberries, Ozon и офлайн-розницы.</p>
+  </section>
+  <div class="card">
+    <div class="up">
+      <label class="f">Продажи (CSV: date, sku, qty, price)<input type="file" id="sales" accept=".csv"></label>
+      <label class="f">Остатки (CSV: sku, stock, lead_time_days, unit_cost) — необязательно<input type="file" id="stock" accept=".csv"></label>
+      <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn btn-p" id="go">Построить прогноз</button><button class="btn btn-g" id="demo">Демо-магазин</button></div>
+    </div>
+    <div class="err" id="err"></div>
+  </div>
+
+  <section id="out" class="hidden" style="margin-top:16px">
+    <div class="grid g4">
+      <div class="card kpi"><div class="l">Заказать сейчас</div><div class="v" id="k1"></div></div>
+      <div class="card kpi"><div class="l">Выручка под риском (дефицит)</div><div class="v" id="k2" style="color:var(--red)"></div></div>
+      <div class="card kpi"><div class="l">Замороженные деньги (излишки)</div><div class="v" id="k3" style="color:var(--blue)"></div></div>
+      <div class="card kpi"><div class="l">Точность vs наивный прогноз</div><div class="v" id="k4" style="color:var(--brand)"></div></div>
+    </div>
+    <div class="card" style="margin-top:16px"><h2 id="ct">Прогноз</h2><canvas id="chart" height="90"></canvas></div>
+    <div class="card" style="margin-top:16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+        <h2>План закупок</h2><a class="btn btn-g" href="/api/purchase-order.csv" style="text-decoration:none">⬇ Заказ поставщику (CSV)</a>
+      </div>
+      <div class="scroll"><table id="tbl"></table></div>
+      <p class="muted" id="bt"></p>
+    </div>
+  </section>
+</div>
+<script>
+const fmt = n => n == null ? '—' : Math.round(n).toLocaleString('ru-RU');
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const LABEL = {order_now:'Заказать сейчас', order_soon:'Скоро заказ', ok:'В норме', overstock:'Излишек'};
+let data, chart;
+async function load(p) {
+  const err = document.getElementById('err'); err.textContent = 'Обучаем модель и считаем план… (~5–10 сек)';
+  try { const r = await p; const j = await r.json(); if (!r.ok) throw new Error(j.detail || 'Ошибка'); err.textContent = ''; render(j); }
+  catch (e) { err.textContent = e.message; }
+}
+document.getElementById('demo').onclick = () => load(fetch('/api/demo'));
+document.getElementById('go').onclick = () => {
+  const s = document.getElementById('sales').files[0], st = document.getElementById('stock').files[0];
+  if (!s) { document.getElementById('err').textContent = 'Выберите файл продаж'; return; }
+  const fd = new FormData(); fd.append('sales', s); if (st) fd.append('stock', st);
+  load(fetch('/api/forecast', {method:'POST', body:fd}));
+};
+function render(j) {
+  data = j; document.getElementById('out').classList.remove('hidden');
+  const s = j.summary, m = j.metrics;
+  document.getElementById('k1').textContent = `${s.order_now} SKU · ${fmt(s.order_budget)} ₸`;
+  document.getElementById('k2').textContent = fmt(s.revenue_at_risk) + ' ₸';
+  document.getElementById('k3').textContent = fmt(s.frozen_capital) + ' ₸';
+  document.getElementById('k4').textContent = `+${Math.round(m.improvement_vs_naive * 100)}%`;
+  document.getElementById('bt').textContent = `Бэктест на 28 днях после ${m.cutoff}: ошибка WAPE модели ${(m.model*100).toFixed(1)}% против ${(m.naive_mean28*100).toFixed(1)}% у среднего за 28 дней и ${(m.seasonal_naive*100).toFixed(1)}% у «как на прошлой неделе».`;
+  const head = ['Товар','ABC','Статус','Остаток','Дней хватит','Прогноз 28д','Точка заказа','Заказать, шт','Сумма заказа ₸','Риск ₸'];
+  document.getElementById('tbl').innerHTML = '<tr>' + head.map((h,i) => `<th class="${i>2?'n':''}">${h}</th>`).join('') + '</tr>' +
+    j.items.map(r => `<tr class="row" data-sku="${esc(r.sku)}"><td>${esc(r.sku)}</td><td>${r.abc}</td><td><span class="pill ${r.status}">${LABEL[r.status]}</span></td>
+      <td class="n">${fmt(r.stock)}</td><td class="n">${r.days_of_cover ?? '—'}</td><td class="n">${fmt(r.forecast_28d)}</td><td class="n">${fmt(r.reorder_point)}</td>
+      <td class="n"><b>${r.order_qty || ''}</b></td><td class="n">${r.order_cost ? fmt(r.order_cost) : ''}</td><td class="n">${r.revenue_at_risk ? fmt(r.revenue_at_risk) : ''}</td></tr>`).join('');
+  document.querySelectorAll('tr.row').forEach(tr => tr.onclick = () => show(tr.dataset.sku));
+  show(j.items[0].sku);
+}
+function show(sku) {
+  document.querySelectorAll('tr.row').forEach(tr => tr.classList.toggle('sel', tr.dataset.sku === sku));
+  const s = data.series[sku]; document.getElementById('ct').textContent = `Прогноз: ${sku}`;
+  if (!window.Chart) return; if (chart) chart.destroy();
+  const labels = s.hist_dates.concat(s.fc_dates);
+  chart = new Chart(document.getElementById('chart'), {type:'line', data:{labels, datasets:[
+    {label:'Факт продаж', data:s.hist.concat(Array(s.fc.length).fill(null)), borderColor:'#94a3b8', pointRadius:0, borderWidth:1.5},
+    {label:'Прогноз', data:Array(s.hist.length).fill(null).concat(s.fc), borderColor:'#0f9d6b', backgroundColor:'rgba(15,157,107,.15)', fill:true, pointRadius:0, borderWidth:2.5}]},
+    options:{interaction:{mode:'index',intersect:false}, scales:{x:{ticks:{maxTicksLimit:10}}}}});
+}
+</script>
+</body>
+</html>

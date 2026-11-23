@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .forecast import backtest, forecast_future, to_daily
@@ -17,7 +17,6 @@ BASE = Path(__file__).resolve().parent.parent
 app = FastAPI(title="StockSense", version="1.0.0",
               description="Прогноз спроса и план закупок для интернет-магазинов")
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
-_last_plan: pd.DataFrame | None = None
 
 
 def _read_csv(data: bytes, required: set[str], name: str) -> pd.DataFrame:
@@ -33,7 +32,6 @@ def _read_csv(data: bytes, required: set[str], name: str) -> pd.DataFrame:
 
 
 def run(sales: pd.DataFrame, stock: pd.DataFrame) -> dict:
-    global _last_plan
     sales["date"] = pd.to_datetime(sales["date"], dayfirst=False, errors="coerce")
     sales = sales.dropna(subset=["date", "sku", "qty"])
     if "price" not in sales:
@@ -45,7 +43,6 @@ def run(sales: pd.DataFrame, stock: pd.DataFrame) -> dict:
     metrics = backtest(daily)
     fc = forecast_future(daily)
     p = plan(daily, fc, stock)
-    _last_plan = p
     hist = daily[daily["date"] > daily["date"].max() - pd.Timedelta(days=120)]
     series = {}
     for sku in p["sku"]:
@@ -93,13 +90,3 @@ def demo():
         from sample.generate import write_demo  # type: ignore
         write_demo(BASE / "sample")
     return run(pd.read_csv(a), pd.read_csv(b))
-
-
-@app.get("/api/purchase-order.csv")
-def purchase_order():
-    """Готовый заказ поставщику (CSV для Excel)."""
-    if _last_plan is None:
-        raise HTTPException(404, "Сначала выполните прогноз")
-    po = _last_plan[_last_plan["order_qty"] > 0][["sku", "order_qty", "order_cost", "status", "stockout_in_days"]]
-    return Response(po.to_csv(index=False).encode("utf-8-sig"), media_type="text/csv",
-                    headers={"Content-Disposition": "attachment; filename=purchase_order.csv"})

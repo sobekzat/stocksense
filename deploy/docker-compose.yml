@@ -1,0 +1,14 @@
+# Оба сайта на одном сервере Oracle Cloud:
+#   TengeLens  → http://IP_СЕРВЕРА        (порт 80)
+#   StockSense → http://IP_СЕРВЕРА:8080   (порт 8080)
+services:
+  tengelens:
+    build: ./tengelens
+    restart: unless-stopped
+    ports: ["80:8000"]
+    mem_limit: 350m
+  stocksense:
+    build: ./stocksense
+    restart: unless-stopped
+    ports: ["8080:8000"]
+    mem_limit: 550m

@@ -47,13 +47,11 @@ def test_plan_logic():
     assert high.iloc[0]["status"] == "overstock" and high.iloc[0]["frozen_capital"] == (5000 - 900) * 50
 
 
-def test_api_demo_and_po():
+def test_api_demo():
     r = client.get("/api/demo")
     assert r.status_code == 200
     j = r.json()
     assert j["summary"]["skus"] == 24 and set(j["series"]) == {i["sku"] for i in j["items"]}
-    po = client.get("/api/purchase-order.csv")
-    assert po.status_code == 200 and "order_qty" in po.text
 
 
 def test_api_rejects_short_history():
